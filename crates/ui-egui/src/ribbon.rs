@@ -2029,9 +2029,6 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
     if __k.clicked() {
         app.open_dialog("comment", json!({"threaded": true}));
     }
-    if big_button(ui, Icon::Comment, "Show\nComments", "Comments pane", false).clicked() {
-        app.grid.pane = Some("comments".into());
-    }
     let __k = big_button(ui, Icon::Delete, "Delete", "Delete Comment", false);
     control_keytip(app, ui, &__k, "review.deleteComment");
     if __k.clicked() {
