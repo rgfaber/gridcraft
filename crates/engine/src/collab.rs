@@ -9,10 +9,17 @@
 //! value. Formulas recalculate on each replica from the shared inputs, so only inputs travel
 //! (volatile functions such as `NOW` and `RAND` differ per peer).
 //!
+//! A cell's comment travels as its own entries: `m/<sheet id>/<A1>` holds the thread (the note or
+//! the first comment, resolved, shown) and each reply is `q/<sheet id>/<A1>/<reply id>`, under an
+//! author-scoped id and ordered by when it was written, so two authors replying at once keep both
+//! replies and a resolve never overwrites a reply. A comment made while shared carries the
+//! author's name on the shared workbook. A cell holds one thread: two authors starting one on the
+//! same cell at once end with the same thread everywhere, the other's first words lost.
+//!
 //! What cannot travel as cells is refused while shared, and the workbook is left as it was:
 //! edits that move cells (inserting or deleting lines, sorting), removing, renaming or moving a
-//! sheet, and changes outside the cells (names, merges, charts, tables, comments). Row heights,
-//! column widths and view settings stay local.
+//! sheet, and changes outside the cells (names, merges, charts, tables). Row heights, column
+//! widths and view settings stay local.
 //!
 //! Undo while shared takes back only this author's own edits; redo is not shared.
 
@@ -20,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use gridcraft_core::CellRef;
-use gridcraft_model::{Sheet, Workbook};
+use gridcraft_model::{Comment, Sheet, Workbook};
 use serde_json::{Value as Json, json};
 
 use crate::{Result, Session};
@@ -39,6 +46,8 @@ enum Entry {
     Sheet(u64),
     Input(u64, CellRef),
     Style(u64, CellRef),
+    /// A cell's comment thread, or one of its replies.
+    Comment(u64, CellRef),
 }
 
 fn sheet_key(id: u64) -> String {
@@ -53,15 +62,71 @@ fn style_key(id: u64, c: CellRef) -> String {
     format!("f/{id}/{}", c.a1())
 }
 
+fn thread_key(id: u64, c: CellRef) -> String {
+    format!("m/{id}/{}", c.a1())
+}
+
+/// Where a cell's replies' keys start: `q/<sheet id>/<A1>/`.
+fn replies_prefix(id: u64, c: CellRef) -> String {
+    format!("q/{id}/{}/", c.a1())
+}
+
+fn reply_key(id: u64, c: CellRef, reply: u64) -> String {
+    format!("{}{reply}", replies_prefix(id, c))
+}
+
 fn parse_key(key: &str) -> Option<Entry> {
-    let mut parts = key.splitn(3, '/');
+    let mut parts = key.splitn(4, '/');
     let (kind, id) = (parts.next()?, parts.next()?.parse::<u64>().ok()?);
-    match (kind, parts.next()) {
-        ("s", None) => Some(Entry::Sheet(id)),
-        ("c", Some(a1)) => Some(Entry::Input(id, CellRef::parse(a1)?)),
-        ("f", Some(a1)) => Some(Entry::Style(id, CellRef::parse(a1)?)),
+    match (kind, parts.next(), parts.next()) {
+        ("s", None, None) => Some(Entry::Sheet(id)),
+        ("c", Some(a1), None) => Some(Entry::Input(id, CellRef::parse(a1)?)),
+        ("f", Some(a1), None) => Some(Entry::Style(id, CellRef::parse(a1)?)),
+        ("m", Some(a1), None) => Some(Entry::Comment(id, CellRef::parse(a1)?)),
+        ("q", Some(a1), Some(reply)) => {
+            reply.parse::<u64>().ok()?;
+            Some(Entry::Comment(id, CellRef::parse(a1)?))
+        }
         _ => None,
     }
+}
+
+/// A comment's thread as it travels: the comment without its replies, and only the thread's own
+/// date.
+fn thread_value(c: &Comment) -> String {
+    let mut t = c.clone();
+    t.replies.clear();
+    t.dates.truncate(1);
+    serde_json::to_string(&t).unwrap_or_default()
+}
+
+/// A reply as it travels: author, text, date, and when it was written (what orders the replies).
+fn reply_value(author: &str, text: &str, date: &str, at: u64) -> String {
+    json!({"author": author, "text": text, "date": date, "at": at}).to_string()
+}
+
+/// The comment on a cell as the register holds it: its thread, and its replies by when they were
+/// written (then by id), the same on every replica.
+fn comment_from(texts: &craft_collab::text::TextMerge, entries: &[(String, String)], id: u64, c: CellRef) -> Option<Comment> {
+    let mut comment: Comment = serde_json::from_str(&texts.register_get(&thread_key(id, c))?).ok()?;
+    let prefix = replies_prefix(id, c);
+    let mut replies: Vec<(u64, u64, Json)> = entries
+        .iter()
+        .filter_map(|(k, v)| {
+            let reply = k.strip_prefix(&prefix)?.parse::<u64>().ok()?;
+            let v: Json = serde_json::from_str(v).ok()?;
+            Some((v.get("at").and_then(Json::as_u64).unwrap_or(0), reply, v))
+        })
+        .collect();
+    replies.sort_by_key(|(at, reply, _)| (*at, *reply));
+    let text = |v: &Json, k: &str| v.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+    comment.replies = replies.iter().map(|(_, _, v)| (text(v, "author"), text(v, "text"))).collect();
+    let dates: Vec<String> = replies.iter().map(|(_, _, v)| text(v, "date")).collect();
+    if dates.iter().any(|d| !d.is_empty()) {
+        comment.dates.resize(1, String::new());
+        comment.dates.extend(dates);
+    }
+    Some(comment)
 }
 
 /// The style of a cell as it travels: the style itself (ids differ per replica), `None` for the
@@ -79,9 +144,23 @@ fn input_value(sheet: &Sheet, c: CellRef) -> Option<String> {
     Some(sheet.input_text(c)).filter(|t| !t.is_empty())
 }
 
-/// Every register entry a workbook holds: what a host seeds when it first shares.
-fn entries_of(wb: &Workbook) -> Vec<(String, String)> {
+/// Every register entry a workbook holds: what a host seeds when it first shares. Replies get ids
+/// minted with tag 0 (never shared), in the order they have.
+fn entries_of(wb: &mut Workbook) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    let mut threads = Vec::new();
+    for sheet in &wb.sheets {
+        for (c, comment) in &sheet.comments {
+            threads.push((sheet.id, *c, comment.clone()));
+        }
+    }
+    for (id, c, comment) in threads {
+        out.push((thread_key(id, c), thread_value(&comment)));
+        for (n, (author, text)) in comment.replies.iter().enumerate() {
+            let date = comment.dates.get(n + 1).map_or("", String::as_str);
+            out.push((reply_key(id, c, wb.mint_id(0)), reply_value(author, text, date, n as u64)));
+        }
+    }
     for sheet in &wb.sheets {
         out.push((sheet_key(sheet.id), sheet.name.clone()));
         for (c, _) in sheet.cells.iter() {
@@ -113,11 +192,12 @@ fn ensure_sheet_ids(wb: &mut Workbook) {
     }
 }
 
-/// A sheet without what may change while shared: its cells, spill caches, row and column sizes
-/// and view settings.
+/// A sheet without what may change while shared: its cells, their comments, spill caches, row
+/// and column sizes and view settings.
 fn sheet_shape(sheet: &Sheet) -> Sheet {
     let mut s = sheet.clone();
     s.cells = Default::default();
+    s.comments = Default::default();
     s.spill.clear();
     s.spill_ranges.clear();
     s.rows.clear();
@@ -154,6 +234,15 @@ impl Session {
     /// The same, mutable.
     pub fn collab_session_mut(&mut self) -> Option<&mut craft_collab::CollabSession> {
         self.collab.as_mut().map(|c| &mut c.shared)
+    }
+
+    /// The name a new comment or reply carries: this author's name on the shared workbook, else
+    /// the user name.
+    pub fn comment_author(&self) -> String {
+        match self.collab.as_ref().filter(|_| self.collab_on_active()) {
+            Some(c) if !c.shared.name().is_empty() => c.shared.name().to_string(),
+            _ => self.prefs.user_name.clone(),
+        }
     }
 
     /// Whether a workbook is shared.
@@ -290,6 +379,7 @@ impl Session {
             }
         }
         let Some(c) = self.collab.as_mut() else { return Ok(()) };
+        writes.extend(comment_writes(c.shared.texts(), tag, before, &d.wb));
         for (key, value) in writes {
             let update = match value {
                 Some(v) => c.shared.texts_mut().register_set(&key, &v),
@@ -375,7 +465,19 @@ impl Session {
         if keys.is_empty() {
             return;
         }
-        let values: Vec<(Entry, Option<String>)> = keys.iter().filter_map(|k| parse_key(k).map(|e| (e, c.shared.texts().register_get(k)))).collect();
+        let entries = c.shared.texts().register_entries();
+        let texts = c.shared.texts();
+        let values: Vec<(Entry, Option<String>)> = keys
+            .iter()
+            .filter_map(|k| {
+                let entry = parse_key(k)?;
+                let value = match &entry {
+                    Entry::Comment(id, at) => comment_from(texts, &entries, *id, *at).and_then(|cm| serde_json::to_string(&cm).ok()),
+                    _ => texts.register_get(k),
+                };
+                Some((entry, value))
+            })
+            .collect();
         let Some(i) = self.collab_bound() else { return };
         let Some(d) = self.docs.get_mut(i) else { return };
         let _ = crate::cmd::commit(d, |cx| {
@@ -393,6 +495,19 @@ impl Session {
             for (entry, value) in &values {
                 match entry {
                     Entry::Sheet(_) => {}
+                    Entry::Comment(id, at) => {
+                        let Some(si) = cx.wb.sheets.iter().position(|s| s.id == *id) else { continue };
+                        let comment = value.as_deref().and_then(|v| serde_json::from_str::<Comment>(v).ok());
+                        let sheet = cx.sheet_mut(si)?;
+                        match comment {
+                            Some(cm) => {
+                                sheet.comments.insert(*at, cm);
+                            }
+                            None => {
+                                sheet.comments.remove(at);
+                            }
+                        }
+                    }
                     Entry::Input(id, at) => {
                         let Some(si) = cx.wb.sheets.iter().position(|s| s.id == *id) else { continue };
                         let style = cx.wb.sheets.get(si).and_then(|s| s.cells.get(*at)).map(|cell| cell.style);
@@ -458,6 +573,60 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// The register writes that bring the shared comments from `before` to `now`: a changed thread is
+/// rewritten, new replies are added under fresh author-scoped ids, and a thread whose replies were
+/// not just added to (deleted, or a new comment over it) has its replies replaced.
+fn comment_writes(texts: &craft_collab::text::TextMerge, tag: u32, before: &Workbook, now: &Workbook) -> Vec<(String, Option<String>)> {
+    let entries = texts.register_entries();
+    let mut next = entries
+        .iter()
+        .filter_map(|(k, _)| k.starts_with("q/").then(|| k.rsplit('/').next()?.parse::<u64>().ok()).flatten())
+        .filter(|id| *id >> 32 == u64::from(tag & 0x1F_FFFF))
+        .map(|id| id as u32)
+        .max()
+        .unwrap_or(0);
+    let held = |id: u64, c: CellRef| -> Vec<String> {
+        let prefix = replies_prefix(id, c);
+        entries.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(k, _)| k.clone()).collect()
+    };
+    let mut out = Vec::new();
+    let mut at = craft_collab::now_ms();
+    let none = BTreeMap::new();
+    for sheet in &now.sheets {
+        let old = before.sheets.iter().find(|s| s.id == sheet.id);
+        if old.is_some_and(|o| Arc::ptr_eq(o, sheet) || o.comments == sheet.comments) {
+            continue;
+        }
+        let was_all = old.map_or(&none, |o| &o.comments);
+        let cells: BTreeSet<CellRef> = was_all.keys().chain(sheet.comments.keys()).copied().collect();
+        for c in cells {
+            let (was, is) = (was_all.get(&c), sheet.comments.get(&c));
+            if was == is {
+                continue;
+            }
+            let Some(is) = is else {
+                out.push((thread_key(sheet.id, c), None));
+                out.extend(held(sheet.id, c).into_iter().map(|k| (k, None)));
+                continue;
+            };
+            if was.map(thread_value) != Some(thread_value(is)) {
+                out.push((thread_key(sheet.id, c), Some(thread_value(is))));
+            }
+            let kept = was.filter(|w| is.replies.starts_with(&w.replies)).map_or(0, |w| w.replies.len());
+            if kept == 0 && was.is_some_and(|w| !w.replies.is_empty()) {
+                out.extend(held(sheet.id, c).into_iter().map(|k| (k, None)));
+            }
+            for (n, (author, text)) in is.replies.iter().enumerate().skip(kept) {
+                next = next.saturating_add(1);
+                at += 1;
+                let date = is.dates.get(n + 1).map_or("", String::as_str);
+                out.push((reply_key(sheet.id, c, craft_collab::ids::author_id(tag, next)), Some(reply_value(author, text, date, at))));
+            }
+        }
+    }
+    out
 }
 
 /// The order every replica gives the sheets: the ones the workbook had when first shared (tag 0)
@@ -551,6 +720,95 @@ mod tests {
         a.execute("cell.set", json!({"cell": "A1", "input": "6"})).unwrap();
         settle(&mut a, &mut b);
         assert_eq!(shown(&b, 0, "B1"), "12", "a precedent's change recalculates the peer's formula");
+    }
+
+    /// Every comment on the first sheet as both authors must agree on it.
+    fn notes(s: &Session) -> Vec<(String, String, String, bool, Vec<(String, String)>)> {
+        let d = s.doc().unwrap();
+        d.wb.sheets[0].comments.iter().map(|(c, m)| (c.a1(), m.author.clone(), m.text.clone(), m.resolved, m.replies.clone())).collect()
+    }
+
+    fn comment(s: &mut Session, cell: &str, text: &str) {
+        s.execute("review.newComment", json!({"cell": cell, "text": text})).unwrap();
+    }
+
+    fn reply(s: &mut Session, cell: &str, text: &str) {
+        s.execute("review.replyComment", json!({"cell": cell, "text": text})).unwrap();
+    }
+
+    #[test]
+    fn comments_made_at_once_travel_with_their_authors() {
+        let (mut a, mut b) = two_authors(&[("A1", "1"), ("B1", "2")]);
+        comment(&mut a, "A1", "from Ann");
+        comment(&mut b, "B1", "from Bob");
+        settle(&mut a, &mut b);
+        assert_eq!(notes(&a), notes(&b));
+        let n = notes(&a);
+        assert_eq!(
+            n.iter().map(|x| (x.0.as_str(), x.1.as_str(), x.2.as_str())).collect::<Vec<_>>(),
+            vec![("A1", "Ann", "from Ann"), ("B1", "Bob", "from Bob")]
+        );
+    }
+
+    #[test]
+    fn one_cell_commented_at_once_ends_with_one_thread_everywhere() {
+        let (mut a, mut b) = two_authors(&[]);
+        comment(&mut a, "C3", "Ann first");
+        comment(&mut b, "C3", "Bob first");
+        settle(&mut a, &mut b);
+        assert_eq!(notes(&a), notes(&b));
+        assert_eq!(notes(&a).len(), 1);
+    }
+
+    #[test]
+    fn two_replies_and_a_resolve_at_once_all_land() {
+        let (mut a, mut b) = two_authors(&[]);
+        comment(&mut a, "A1", "Thoughts?");
+        settle(&mut a, &mut b);
+        reply(&mut a, "A1", "Ann adds");
+        reply(&mut b, "A1", "Bob adds");
+        b.execute("review.resolveComment", json!({"cell": "A1"})).unwrap();
+        settle(&mut a, &mut b);
+        assert_eq!(notes(&a), notes(&b));
+        let t = &notes(&a)[0];
+        assert!(t.3, "the resolve travelled");
+        let mut replies = t.4.clone();
+        replies.sort();
+        assert_eq!(replies, vec![("Ann".into(), "Ann adds".into()), ("Bob".into(), "Bob adds".into())]);
+    }
+
+    #[test]
+    fn undo_and_delete_of_a_comment_travel() {
+        let (mut a, mut b) = two_authors(&[]);
+        comment(&mut b, "B2", "Bob's");
+        settle(&mut a, &mut b);
+        comment(&mut a, "A1", "Ann's");
+        settle(&mut a, &mut b);
+        a.execute("edit.undo", json!({})).unwrap();
+        settle(&mut a, &mut b);
+        assert_eq!(notes(&a), notes(&b));
+        assert_eq!(notes(&b).iter().map(|x| x.2.as_str()).collect::<Vec<_>>(), vec!["Bob's"]);
+        a.execute("review.deleteComment", json!({"cell": "B2"})).unwrap();
+        settle(&mut a, &mut b);
+        assert!(notes(&b).is_empty(), "the delete travelled");
+    }
+
+    #[test]
+    fn a_comment_from_before_sharing_reaches_the_joiner_and_takes_replies() {
+        let (ta, tb) = MemoryTransport::pair(A, B);
+        let mut a = Session::new();
+        a.new_workbook();
+        a.execute("review.newComment", json!({"cell": "A1", "text": "written alone", "author": "Ann"})).unwrap();
+        a.execute("review.replyComment", json!({"cell": "A1", "text": "and again", "author": "Ann"})).unwrap();
+        a.collab_install(CollabSession::host("book", "Ann", Box::new(ta), &[])).unwrap();
+        let mut b = Session::new();
+        b.new_workbook();
+        b.collab_install(CollabSession::join("book", "Bob", Box::new(tb))).unwrap();
+        settle(&mut a, &mut b);
+        reply(&mut b, "A1", "seen");
+        settle(&mut a, &mut b);
+        assert_eq!(notes(&a), notes(&b));
+        assert_eq!(notes(&a)[0].4.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), vec!["and again", "seen"]);
     }
 
     #[test]
