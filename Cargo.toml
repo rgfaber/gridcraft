@@ -11,6 +11,10 @@ rust-version = "1.90"
 repository = "https://github.com/storytold/gridcraft"
 
 [workspace.dependencies]
+# the shared Craft collaboration seam, its mesh adapter and the Share windows (crates.io)
+craft-collab = { package = "macula-craft-seam", version = "0.4" }
+macula-craft-collab = "0.4"
+craft-share = { package = "macula-craft-share", version = "0.4" }
 # internal
 gridcraft-core = { path = "crates/core" }
 gridcraft-numfmt = { path = "crates/numfmt" }

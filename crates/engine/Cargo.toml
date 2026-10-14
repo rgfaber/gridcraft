@@ -9,6 +9,7 @@ description = "GridCraft engine: sessions, commands, history, clipboard, fill, s
 workspace = true
 
 [dependencies]
+craft-collab = { workspace = true }
 gridcraft-core = { workspace = true }
 gridcraft-numfmt = { workspace = true }
 gridcraft-formula = { workspace = true }

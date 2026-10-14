@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod cf;
 mod clip_html;
 pub mod cmd;
+pub mod collab;
 pub mod display;
 pub mod fill;
 pub mod io;
@@ -27,7 +28,7 @@ use gridcraft_calc::Calc;
 use gridcraft_core::{CellRef, RangeRef};
 use gridcraft_model::Workbook;
 use serde::Serialize;
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command, register_test_command};
 pub use gridcraft_calc as calc;
@@ -108,6 +109,9 @@ pub struct DocState {
     pub sheet_selections: Vec<Selection>,
     /// Allow Edit Ranges unlocked with their password in this session: (sheet name, title).
     pub unlocked_ranges: Vec<(String, String)>,
+    /// The last edit moved cells (inserted or deleted lines, sorted, rebuilt a table): a shared
+    /// workbook refuses it, since its peers address cells by position.
+    pub last_structural: bool,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -132,6 +136,7 @@ impl DocState {
             title,
             sheet_selections: vec![],
             unlocked_ranges: vec![],
+            last_structural: false,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -251,6 +256,10 @@ pub struct Session {
     /// Review › Notes › Show All Notes: every note is displayed. An application display setting
     /// (like Excel's comment indicator option), so it's not saved in the file.
     pub show_all_notes: bool,
+    /// The workbook shared over the mesh, when one is ([`collab`]).
+    collab: Option<collab::CollabRuntime>,
+    /// This person's realm membership status, as the Share window shows it.
+    realm: Option<Json>,
 }
 
 impl Session {
@@ -315,6 +324,17 @@ impl Session {
         if let Err(why) = (spec.enabled)(self) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
+        // A shared workbook undoes this author's own edits only, and shares no redo.
+        if self.collab_on_active() {
+            match id {
+                "edit.undo" => return self.collab_undo().map(|done| json!({"undone": done})),
+                "edit.redo" => return Err(EngineError::Disabled(id.to_string(), "redo isn't shared".into())),
+                _ => {}
+            }
+        }
+        if let Some(d) = self.active_mut() {
+            d.last_structural = false;
+        }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)));
@@ -334,6 +354,19 @@ impl Session {
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
+        // A shared workbook shares the edit, or refuses it and stays as it was.
+        if result.is_ok()
+            && self.collab_on_active()
+            && let Some((uid, wb, sel)) = &before
+            && let Err(why) = self.collab_capture(wb)
+        {
+            if let Some(d) = self.docs.iter_mut().find(|d| d.uid == *uid) {
+                d.wb = wb.clone();
+                d.selection = sel.clone();
+                d.calc.rebuild(&d.wb);
+            }
+            return Err(EngineError::Disabled(id.to_string(), why));
+        }
         if spec.journal && result.is_ok() {
             self.journal.push((id.to_string(), cmd::journal_params(&params)));
             if self.journal.len() > 10_000 {

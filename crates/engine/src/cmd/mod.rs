@@ -2,6 +2,7 @@
 //! `data.sortAscending`) plus primitive editing commands (`cell.set`, `selection.set`).
 
 pub mod analysis;
+mod collab;
 pub mod data;
 pub mod draw;
 pub mod edit;
@@ -144,6 +145,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(forecast::specs());
         v.extend(analysis::specs());
         v.extend(print::specs());
+        v.extend(collab::specs());
         v
     })
 }
@@ -346,6 +348,7 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     if let Some(t0) = t0 {
         eprintln!("commit: edit {:?}, {} changed", t0.elapsed(), changed.len());
     }
+    d.last_structural |= structural;
     if structural {
         d.calc.recalc_all(&mut wb);
     } else if !changed.is_empty() {
