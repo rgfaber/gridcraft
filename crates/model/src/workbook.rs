@@ -88,6 +88,10 @@ pub struct DocProps {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workbook {
     pub sheets: Vec<Arc<Sheet>>,
+    /// The next id each author mints for a sheet while the workbook is shared, by author tag
+    /// (`Sheet::id`). Kept with the workbook so a restarted author never reuses an id.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub next_ids: std::collections::BTreeMap<u32, u32>,
     pub names: Vec<DefinedName>,
     pub styles: StyleTable,
     pub theme: Theme,
@@ -125,10 +129,20 @@ impl Default for Workbook {
 }
 
 impl Workbook {
+    /// A fresh id for a new object by the author with `tag`: `(tag << 32) | n`, `n` counting up
+    /// per author and kept in the workbook.
+    pub fn mint_id(&mut self, tag: u32) -> u64 {
+        let n = self.next_ids.entry(tag).or_insert(1);
+        let id = (u64::from(tag & 0x1F_FFFF) << 32) | u64::from(*n);
+        *n = n.saturating_add(1);
+        id
+    }
+
     /// A new workbook with one sheet, "Sheet1".
     pub fn new() -> Workbook {
         Workbook {
             sheets: vec![Arc::new(Sheet::new("Sheet1"))],
+            next_ids: std::collections::BTreeMap::new(),
             names: vec![],
             styles: StyleTable::default(),
             theme: Theme::default(),

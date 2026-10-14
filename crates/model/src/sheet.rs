@@ -52,6 +52,11 @@ impl SheetViewMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
     pub name: String,
+    /// The sheet's stable id while its workbook is shared over the mesh (peers name cells by it,
+    /// since a name can change): `(author tag << 32) | n`, the author-scoped rule shared with the
+    /// other Craft apps. 0 until the workbook is first shared. Not saved in XLSX.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id: u64,
     pub cells: CellStore,
     /// Static pictures are sparse rich content. Ordinary cells carry no picture pointer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "picture_map")]
@@ -121,6 +126,7 @@ impl Sheet {
     pub fn new(name: impl Into<String>) -> Sheet {
         Sheet {
             name: name.into(),
+            id: 0,
             cells: CellStore::new(),
             cell_pictures: BTreeMap::new(),
             spill: BTreeMap::new(),
@@ -452,4 +458,8 @@ mod picture_map {
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<CellRef, Arc<CellPicture>>, D::Error> {
         Ok(Vec::<(CellRef, Arc<CellPicture>)>::deserialize(deserializer)?.into_iter().collect())
     }
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }

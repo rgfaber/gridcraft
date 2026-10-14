@@ -91,6 +91,36 @@ impl CellStore {
             .values()
             .flat_map(|band| band.rows.iter().flat_map(|(row, cols)| cols.iter().map(move |(col, cell)| (CellRef::new(*row, *col), cell))))
     }
+    /// The cells that differ between `self` and `other` (added, removed or changed), in order.
+    /// Bands both stores share are skipped without looking inside, so after an edit the cost is
+    /// the bands the edit touched.
+    pub fn changed_cells(&self, other: &CellStore) -> Vec<CellRef> {
+        let mut out = Vec::new();
+        let keys: std::collections::BTreeSet<u32> = self.bands.keys().chain(other.bands.keys()).copied().collect();
+        for key in keys {
+            let (a, b) = (self.bands.get(&key), other.bands.get(&key));
+            if let (Some(a), Some(b)) = (a, b)
+                && (Arc::ptr_eq(a, b) || a == b)
+            {
+                continue;
+            }
+            let empty = BTreeMap::new();
+            let ra = a.map_or(&empty, |band| &band.rows);
+            let rb = b.map_or(&empty, |band| &band.rows);
+            let row_keys: std::collections::BTreeSet<u32> = ra.keys().chain(rb.keys()).copied().collect();
+            for row in row_keys {
+                let (ca, cb) = (ra.get(&row), rb.get(&row));
+                if ca == cb {
+                    continue;
+                }
+                let no_cols = BTreeMap::new();
+                let (ca, cb) = (ca.unwrap_or(&no_cols), cb.unwrap_or(&no_cols));
+                let cols: std::collections::BTreeSet<u32> = ca.keys().chain(cb.keys()).copied().collect();
+                out.extend(cols.into_iter().filter(|col| ca.get(col) != cb.get(col)).map(|col| CellRef::new(row, col)));
+            }
+        }
+        out
+    }
     /// Cells of one row in `c0..=c1`.
     pub fn row(&self, row: u32, c0: u32, c1: u32) -> impl Iterator<Item = (u32, &Cell)> + '_ {
         self.bands.get(&(row / BAND)).and_then(|b| b.rows.get(&row)).into_iter().flat_map(move |cols| cols.range(c0..=c1).map(|(c, cell)| (*c, cell)))
@@ -215,6 +245,21 @@ mod tests {
 
     fn c(r: u32, col: u32) -> CellRef {
         CellRef::new(r, col)
+    }
+
+    #[test]
+    fn changed_cells_lists_what_an_edit_touched_and_nothing_else() {
+        let mut a = CellStore::new();
+        for r in 0..300 {
+            a.set(c(r, 0), Cell::value((r as f64).into()));
+        }
+        let mut b = a.clone();
+        assert!(a.changed_cells(&b).is_empty(), "a clone shares every band");
+        b.set(c(5, 0), Cell::value("x".into()));
+        b.set(c(200, 3), Cell::value(1.0.into()));
+        b.remove(c(299, 0));
+        assert_eq!(a.changed_cells(&b), vec![c(5, 0), c(200, 3), c(299, 0)]);
+        assert_eq!(b.changed_cells(&a), vec![c(5, 0), c(200, 3), c(299, 0)], "symmetric");
     }
 
     #[test]
