@@ -3,7 +3,7 @@
 # exports VERSION and NFPM_ARCH.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
-name: gridcraft
+name: ${PKG}
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -13,8 +13,8 @@ release: 1
 section: misc
 priority: optional
 maintainer: ${GRIDCRAFT_MAINTAINER}
-vendor: Learning Machines LLC
-homepage: https://getartcraft.com/apps/gridcraft
+vendor: ${GRIDCRAFT_VENDOR}
+homepage: ${GRIDCRAFT_HOMEPAGE}
 license: MIT OR Apache-2.0
 description: |-
   Open-source, native spreadsheet that works the way Excel users expect.
@@ -55,11 +55,11 @@ overrides:
       - xdg-desktop-portal
 
 contents:
-  - src: ${STAGE}/usr/bin/gridcraft
-    dst: /usr/bin/gridcraft
+  - src: ${STAGE}/usr/bin/${PKG}
+    dst: /usr/bin/${PKG}
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/bin/gridcraft-cli
-    dst: /usr/bin/gridcraft-cli
+  - src: ${STAGE}/usr/bin/${PKG}-cli
+    dst: /usr/bin/${PKG}-cli
     file_info: { mode: 0755 }
   - src: ${STAGE}/usr/share/
     dst: /usr/share/

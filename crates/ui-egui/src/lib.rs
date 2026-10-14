@@ -29,6 +29,7 @@ pub mod pivot_pane;
 pub mod printing;
 pub mod ribbon;
 pub mod selection_glide;
+mod share_host;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
@@ -188,6 +189,19 @@ pub struct Services {
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<Box<dyn Fn(&[u8])>>,
+    /// Join a shared workbook through an invite line (the app owns the mesh): `(session, invite
+    /// line, display name)`.
+    pub join_invite: Option<Box<dyn Fn(&mut Session, &str, &str) -> Result<(), String>>>,
+    /// The realm membership, read fresh.
+    pub realm_refresh: Option<Box<dyn Fn(&mut Session) -> Result<serde_json::Value, String>>>,
+    /// Start the realm sign-in; the answer carries the link.
+    pub sign_in: Option<Box<dyn Fn(&mut Session) -> Result<serde_json::Value, String>>>,
+    /// Poll the waiting sign-in.
+    pub sign_in_check: Option<Box<dyn Fn(&mut Session) -> Result<serde_json::Value, String>>>,
+    /// The identity's display name.
+    pub identity_name: Option<Box<dyn Fn(&mut Session) -> Result<serde_json::Value, String>>>,
+    /// Save the identity's display name.
+    pub set_identity_name: Option<Box<dyn Fn(&mut Session, &str) -> Result<serde_json::Value, String>>>,
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).
@@ -247,12 +261,17 @@ pub struct SheetApp {
     /// Chart selected on the sheet (id).
     pub selected_chart: Option<u32>,
     pub started: f64,
+    /// The Share and Sign in windows (macula-craft-share).
+    pub share: craft_share::ShareState,
+    pub login: craft_share::LoginState,
 }
 
 impl SheetApp {
     pub fn new(session: Session, services: Services) -> SheetApp {
         SheetApp {
             session,
+            share: craft_share::ShareState::default(),
+            login: craft_share::LoginState::default(),
             ui: UiState::default(),
             views: HashMap::new(),
             editor: None,
@@ -1017,6 +1036,12 @@ impl SheetApp {
                 self.perf.grid_ms = now_ms() - g0;
             });
         }
+        // A shared workbook: peers' edits land, and the frame clock keeps running while shared.
+        if self.session.collab_active() {
+            self.session.collab_tick();
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        share_host::show(self, &ctx);
         dialogs::show(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);

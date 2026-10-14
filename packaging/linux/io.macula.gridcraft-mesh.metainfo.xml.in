@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for the mesh preview build of the rgfaber/gridcraft fork. package.sh
+     substitutes @VERSION@ and @DATE@. -->
+<component type="desktop-application">
+  <id>io.macula.gridcraft-mesh</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>GridCraft (mesh preview)</name>
+  <summary>Work on spreadsheets together over the Macula mesh</summary>
+  <developer id="io.macula">
+    <name>Macula</name>
+  </developer>
+  <description>
+    <p>
+      A preview build of GridCraft, the open-source spreadsheet, with co-editing over the Macula mesh: people on different machines edit one workbook, cell by cell, with no server holding it. A host shares a workbook by invite, or with the members of a realm, including a realm other than its own. While a workbook is shared, cells, their formats and new sheets travel; inserting or deleting rows and columns, sorting and renaming sheets wait for a later preview.
+    </p>
+    <p>
+      This is a fork's build, not an upstream GridCraft release.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.macula.gridcraft-mesh.desktop</launchable>
+  <icon type="stock">io.macula.gridcraft-mesh</icon>
+  <url type="homepage">https://github.com/rgfaber/gridcraft</url>
+  <url type="bugtracker">https://github.com/macula-io/macula-craft-collab/issues</url>
+  <categories>
+    <category>Office</category>
+    <category>Spreadsheet</category>
+  </categories>
+  <keywords>
+    <keyword>spreadsheet</keyword>
+    <keyword>collaboration</keyword>
+    <keyword>mesh</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">640</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <provides>
+    <binary>gridcraft-mesh</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

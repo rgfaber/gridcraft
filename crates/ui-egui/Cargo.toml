@@ -13,6 +13,8 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "d27646a5f7c
 gridcraft-engine = { workspace = true }
 gridcraft-chart = { workspace = true }
 egui = { workspace = true }
+craft-collab = { workspace = true }
+craft-share = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

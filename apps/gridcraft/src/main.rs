@@ -1,6 +1,6 @@
 //! GridCraft desktop app.
 //!
-//! Usage: `gridcraft [--control <port>] [--sample <name>] [files…]`
+//! Usage: `gridcraft [--control <port>] [--sample <name>] [--collab <config.json>] [files…]`
 //!
 //! `--control <port>` (or `GRIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
@@ -10,6 +10,7 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+mod collab_setup;
 mod control_server;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
@@ -188,6 +189,12 @@ fn services() -> Services {
         open_url: Some(Box::new(|url: &str| open_with_system(url))),
         printers: Some(print::discover()),
         print_native: Some(print::submit()),
+        join_invite: Some(Box::new(collab_setup::join_from_invite)),
+        realm_refresh: Some(Box::new(collab_setup::realm_refresh)),
+        sign_in: Some(Box::new(collab_setup::sign_in)),
+        sign_in_check: Some(Box::new(collab_setup::sign_in_check)),
+        identity_name: Some(Box::new(collab_setup::identity_name)),
+        set_identity_name: Some(Box::new(collab_setup::set_identity_name)),
         ..Default::default()
     }
 }
@@ -214,6 +221,17 @@ fn icon() -> Option<egui::IconData> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
 }
+
+/// The build's identity: upstream's unless a fork's build sets its own at compile time (the mesh
+/// preview), so the window matches its desktop entry.
+const APP_ID: &str = match option_env!("GRIDCRAFT_APP_ID") {
+    Some(id) => id,
+    None => "ai.storyteller.gridcraft",
+};
+const APP_NAME: &str = match option_env!("GRIDCRAFT_APP_NAME") {
+    Some(name) => name,
+    None => "GridCraft",
+};
 
 fn main() -> eframe::Result<()> {
     // First, so the panic hook and every start-up warning are recorded (`logging`).
@@ -243,6 +261,7 @@ fn main() -> eframe::Result<()> {
     }
     let mut control_port: Option<u16> = std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut sample: Option<String> = None;
+    let mut collab: Option<String> = None;
     let mut files: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -250,6 +269,10 @@ fn main() -> eframe::Result<()> {
             "--control" => {
                 i += 1;
                 control_port = args.get(i).and_then(|p| p.parse().ok());
+            }
+            "--collab" => {
+                i += 1;
+                collab = args.get(i).cloned();
             }
             "--sample" => {
                 i += 1;
@@ -283,6 +306,16 @@ fn main() -> eframe::Result<()> {
     if session.documents().is_empty() {
         session.new_workbook();
     }
+    // The person's mesh identity, so the Share window's realm row works from a plain run; a
+    // `--collab` config then shares or joins the workbook with its own identity.
+    if let Err(e) = collab_setup::ensure_default_identity(&mut session) {
+        log::warn!("collab: {e}");
+    }
+    if let Some(path) = collab.as_deref()
+        && let Err(e) = collab_setup::attach(&mut session, path)
+    {
+        log::warn!("collab: {e}");
+    }
     let mut app = SheetApp::new(session, services());
     app.watch_desktop_theme();
     app.after_engine(); // Show warnings from the sample.
@@ -295,10 +328,10 @@ fn main() -> eframe::Result<()> {
         app.open_path(f);
     }
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("GridCraft")
+        .with_title(APP_NAME)
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([640.0, 420.0])
-        .with_app_id("ai.storyteller.gridcraft")
+        .with_app_id(APP_ID)
         .with_drag_and_drop(true);
     if cfg!(target_os = "macos") {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);

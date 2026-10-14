@@ -205,6 +205,15 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
         "engine.journal" => ok(json!(app.session.journal.iter().map(|(id, p)| json!({"command": id, "params": p})).collect::<Vec<_>>())),
         "document.inspect" | "sheet.read" | "cell.get" | "selection.stats" => wrap(app.session.run(method, p.clone())),
         "ui.inspect" => ok(inspect(app, ctx)),
+        // The Share and Sign in windows: `value` opens or closes, none toggles.
+        "ui.share" => {
+            app.share.open = p.get("value").and_then(Json::as_bool).unwrap_or(!app.share.open);
+            ok(json!({"share": app.share.open, "active": app.session.collab_active()}))
+        }
+        "ui.login" => {
+            app.login.open = p.get("value").and_then(Json::as_bool).unwrap_or(!app.login.open);
+            ok(json!({"login": app.login.open}))
+        }
         "ui.ribbon" => {
             app.ui.ribbon_tab = s("tab").unwrap_or("Home").to_string();
             app.ui.ribbon_collapsed = false;

@@ -17,7 +17,11 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.gridcraft
+# The build's identity. Upstream's by default; a fork's own build (the mesh preview) overrides
+# them so it installs beside upstream's, never as it.
+APP_ID="${GRIDCRAFT_APP_ID:-ai.storyteller.gridcraft}"
+PKG="${GRIDCRAFT_PKG:-gridcraft}"
+UPSTREAM_ID=ai.storyteller.gridcraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
@@ -38,7 +42,9 @@ case "$ARCH" in
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
 export GRIDCRAFT_MAINTAINER="${GRIDCRAFT_MAINTAINER:-GridCraft maintainers <gridcraft@storyteller.ai>}"
-BASENAME="gridcraft-$VERSION-linux-$ARCH"
+export GRIDCRAFT_VENDOR="${GRIDCRAFT_VENDOR:-Learning Machines LLC}"
+export GRIDCRAFT_HOMEPAGE="${GRIDCRAFT_HOMEPAGE:-https://getartcraft.com/apps/gridcraft}"
+BASENAME="$PKG-$VERSION-linux-$ARCH"
 
 echo "==> GridCraft $VERSION for Linux $ARCH ($FORMATS)"
 
@@ -55,9 +61,9 @@ STAGE="$WORK/root"
 rm -rf "$WORK"
 
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
-install -Dm755 "$BIN/gridcraft" "$STAGE/usr/bin/gridcraft"
-install -Dm755 "$BIN/gridcraft-cli" "$STAGE/usr/bin/gridcraft-cli"
-"${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/gridcraft" "$STAGE/usr/bin/gridcraft-cli" 2>/dev/null || true
+install -Dm755 "$BIN/gridcraft" "$STAGE/usr/bin/$PKG"
+install -Dm755 "$BIN/gridcraft-cli" "$STAGE/usr/bin/$PKG-cli"
+"${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/$PKG" "$STAGE/usr/bin/$PKG-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
@@ -65,8 +71,14 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$GRIDCRAFT_BUILD_DATE/g" \
   "$HERE/$APP_ID.metainfo.xml.in" >"$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 mkdir -p "$STAGE/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
-mkdir -p "$STAGE/usr/share/doc/gridcraft"
-copy_docs "$STAGE/usr/share/doc/gridcraft"
+if [ "$APP_ID" != "$UPSTREAM_ID" ]; then
+  # The icons are upstream's artwork under the build's own id, so the two never collide.
+  find "$STAGE/usr/share/icons/hicolor" -name "$UPSTREAM_ID.*" | while read -r icon; do
+    mv "$icon" "$(dirname "$icon")/$APP_ID.${icon##*.}"
+  done
+fi
+mkdir -p "$STAGE/usr/share/doc/$PKG"
+copy_docs "$STAGE/usr/share/doc/$PKG"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -91,7 +103,7 @@ if has deb || has rpm; then
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
-  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  sed -e "s|\${STAGE}|$STAGE|g" -e "s|\${PKG}|$PKG|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -102,9 +114,9 @@ if has appimage; then
   APPDIR="$WORK/GridCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
   mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
-  ln -s usr/bin/gridcraft "$APPDIR/AppRun"
+  ln -s "usr/bin/$PKG" "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
-  cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
+  cp "$STAGE/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
   ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
@@ -141,9 +153,9 @@ if has appimage; then
 fi
 
 if [ -z "${CROSS_TARGET:-}" ]; then
-  "$STAGE/usr/bin/gridcraft-cli" --version
+  "$STAGE/usr/bin/$PKG-cli" --version
 elif [ -n "${EMULATOR:-}" ]; then
-  "$EMULATOR" "$STAGE/usr/bin/gridcraft-cli" --version
+  "$EMULATOR" "$STAGE/usr/bin/$PKG-cli" --version
 fi
 echo "==> done"
 ls -lh "$DIST"

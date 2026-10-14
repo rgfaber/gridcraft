@@ -129,8 +129,15 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                 if __k.clicked() {
                     app.open_dialog("commandSearch", json!({}));
                 }
-                let share = small_button(ui, Icon::Share, "Share", "Share: export or save a copy", true);
+                let share = small_button(ui, Icon::Share, "Share", "Share live with people, or export a copy", true);
                 egui::Popup::menu(&share).show(|ui| {
+                    if ui.button("Share Live (Invite People)…").clicked() {
+                        app.share.open = true;
+                    }
+                    if ui.button("Sign In…").clicked() {
+                        app.login.open = true;
+                    }
+                    ui.separator();
                     for (label, fmt) in
                         [("Save a Copy as Excel Workbook (.xlsx)…", "xlsx"), ("Export as CSV…", "csv"), ("Export as Web Page (.html)…", "html")]
                     {

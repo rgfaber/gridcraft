@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=GridCraft (mesh preview)
+GenericName=Spreadsheet
+Comment=Work on spreadsheets together over the Macula mesh, with no server in between
+Exec=gridcraft-mesh %F
+TryExec=gridcraft-mesh
+Icon=io.macula.gridcraft-mesh
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.macula.gridcraft-mesh
+Categories=Office;Spreadsheet;
+Keywords=spreadsheet;workbook;sheet;formula;xlsx;csv;collaboration;mesh;co-edit;
+MimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.ms-excel.sheet.macroEnabled.12;application/vnd.ms-excel.sheet.binary.macroEnabled.12;application/vnd.oasis.opendocument.spreadsheet;text/csv;text/tab-separated-values;

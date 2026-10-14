@@ -663,6 +663,17 @@ fn paint_panes(
     if geo.fr > 0 && geo.fc > 0 {
         quads.push((fr_rows, fr_cols, Rect::from_min_max(geo.cells.min, split)));
     }
+    // Co-authors' active cells on this sheet, when this workbook is shared.
+    let shared_here = app.session.active().map(|d| d.uid).is_some_and(|uid| app.session.collab_doc() == Some(uid));
+    let peers: Vec<(String, Color32, CellRef)> = if shared_here {
+        app.session
+            .collab_peers()
+            .into_iter()
+            .filter_map(|(name, [r, g, b], at)| at.filter(|(sheet, _)| *sheet == si).map(|(_, cell)| (name, Color32::from_rgb(r, g, b), cell)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (rows, cols, clip) in &quads {
         if rows.0 > rows.1 || cols.0 > cols.1 {
             continue;
@@ -670,6 +681,13 @@ fn paint_panes(
         let p = painter.with_clip_rect(*clip);
         paint_quadrant(&p, geo, wb, si, sh, *rows, *cols, cf, t);
         paint_selection(&p, geo, sh, sel, outline, t, app, *rows, *cols);
+        for (name, color, cell) in &peers {
+            if range_in_pane(RangeRef::cell(*cell), *rows, *cols) {
+                let rect = geo.cell_rect(sh, *cell);
+                p.rect_stroke(rect, 0.0, Stroke::new(2.0, *color), egui::StrokeKind::Inside);
+                p.text(rect.left_top() + vec2(2.0, -1.0), egui::Align2::LEFT_BOTTOM, name, egui::FontId::proportional(11.0), *color);
+            }
+        }
     }
     // Freeze lines.
     if geo.fr > 0 {

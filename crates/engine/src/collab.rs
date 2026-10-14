@@ -233,7 +233,10 @@ impl Session {
         // A structural edit (a full recalculation) is fine when it only added sheets; one that
         // changed the cells of a sheet already there moved them.
         let moved = d.last_structural
-            && before.sheets.iter().any(|old| d.wb.sheets.iter().find(|s| s.id == old.id).is_some_and(|new| !old.cells.changed_cells(&new.cells).is_empty()));
+            && before
+                .sheets
+                .iter()
+                .any(|old| d.wb.sheets.iter().find(|s| s.id == old.id).is_some_and(|new| !old.cells.changed_cells(&new.cells).is_empty()));
         if moved {
             return Err("moving cells (inserting or deleting rows and columns, sorting) isn't shared yet".into());
         }
@@ -372,8 +375,7 @@ impl Session {
         if keys.is_empty() {
             return;
         }
-        let values: Vec<(Entry, Option<String>)> =
-            keys.iter().filter_map(|k| parse_key(k).map(|e| (e, c.shared.texts().register_get(k)))).collect();
+        let values: Vec<(Entry, Option<String>)> = keys.iter().filter_map(|k| parse_key(k).map(|e| (e, c.shared.texts().register_get(k)))).collect();
         let Some(i) = self.collab_bound() else { return };
         let Some(d) = self.docs.get_mut(i) else { return };
         let _ = crate::cmd::commit(d, |cx| {
